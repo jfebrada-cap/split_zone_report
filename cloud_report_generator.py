@@ -597,9 +597,11 @@ def create_executive_dashboard(all_data, raw_ecs_data=None, raw_rds_data=None, r
         if resource_type not in all_data:
             continue
             
-        # Get the appropriate raw data for each resource type
-        if resource_type == "ECS" and raw_ecs_data is not None:
-            data_for_analysis = raw_ecs_data
+        # Get the appropriate data for analysis
+        # For ECS, use the consolidated data (transformed data)
+        # For RDS and Cache, use the raw data as they don't get consolidated
+        if resource_type == "ECS":
+            data_for_analysis = all_data[resource_type]  # Use consolidated data
         elif resource_type == "RDS" and raw_rds_data is not None:
             data_for_analysis = raw_rds_data
         elif resource_type == "Cache" and raw_cache_data is not None:
@@ -637,9 +639,10 @@ def create_executive_dashboard(all_data, raw_ecs_data=None, raw_rds_data=None, r
         
         # Define metric columns based on resource type
         if resource_type == "ECS":
-            cpu_col = "Max_CPU_Util"
-            mem_col = "Max_Mem_Util"
-            disk_col = "diskusage_util" if "diskusage_util" in data_for_analysis.columns else "P95_Disk"
+            # For ECS, we use the Application-level metrics from consolidated data
+            cpu_col = "Application CPU/P95"
+            mem_col = "Application Mem/P95"
+            disk_col = "Application Disk Util/P95"
         elif resource_type == "RDS":
             cpu_col = "RDS_Max_CPU_Util" if "RDS_Max_CPU_Util" in data_for_analysis.columns else "RDS_P95_CPU"
             mem_col = "RDS_Max_Mem_Util" if "RDS_Max_Mem_Util" in data_for_analysis.columns else "RDS_P95_Mem"
@@ -662,6 +665,7 @@ def create_executive_dashboard(all_data, raw_ecs_data=None, raw_rds_data=None, r
             else:
                 platform_data = data_for_analysis if platform == "OTHER" else pd.DataFrame()
             
+            # For ECS, count applications (after consolidation), for others count instances
             num_deployments = len(platform_data)
             total_deployments += num_deployments
             
@@ -674,6 +678,7 @@ def create_executive_dashboard(all_data, raw_ecs_data=None, raw_rds_data=None, r
                 # CPU metrics with CORRECT ranges
                 if cpu_col in data_for_analysis.columns:
                     cpu_values = pd.to_numeric(platform_data[cpu_col], errors='coerce').fillna(0)
+                    # COUNT EACH DEPLOYMENT (application or instance)
                     cpu_green = ((cpu_values >= 0) & (cpu_values <= 75)).sum()  # Green: 0-75% inclusive
                     cpu_amber = ((cpu_values > 75) & (cpu_values <= 89)).sum()  # Amber: 75-89% inclusive
                     cpu_red = (cpu_values >= 90).sum()  # Red: 90-100% inclusive
@@ -681,6 +686,7 @@ def create_executive_dashboard(all_data, raw_ecs_data=None, raw_rds_data=None, r
                 # Memory metrics with CORRECT ranges
                 if mem_col in data_for_analysis.columns:
                     mem_values = pd.to_numeric(platform_data[mem_col], errors='coerce').fillna(0)
+                    # COUNT EACH DEPLOYMENT (application or instance)
                     mem_green = ((mem_values >= 0) & (mem_values <= 75)).sum()  # Green: 0-75% inclusive
                     mem_amber = ((mem_values > 75) & (mem_values <= 89)).sum()  # Amber: 75-89% inclusive
                     mem_red = (mem_values >= 90).sum()  # Red: 90-100% inclusive
@@ -688,9 +694,18 @@ def create_executive_dashboard(all_data, raw_ecs_data=None, raw_rds_data=None, r
                 # Disk metrics with CORRECT ranges
                 if disk_col and disk_col in data_for_analysis.columns:
                     disk_values = pd.to_numeric(platform_data[disk_col], errors='coerce').fillna(0)
+                    # COUNT EACH DEPLOYMENT (application or instance)
                     disk_green = ((disk_values >= 0) & (disk_values <= 75)).sum()  # Green: 0-75% inclusive
                     disk_amber = ((disk_values > 75) & (disk_values <= 89)).sum()  # Amber: 75-89% inclusive
                     disk_red = (disk_values >= 90).sum()  # Red: 90-100% inclusive
+                elif resource_type == "ECS":
+                    # For ECS, use Disk Util/P95 from consolidated data
+                    if disk_col in data_for_analysis.columns:
+                        disk_values = pd.to_numeric(platform_data[disk_col], errors='coerce').fillna(0)
+                        # COUNT EACH DEPLOYMENT (application)
+                        disk_green = ((disk_values >= 0) & (disk_values <= 75)).sum()  # Green: 0-75% inclusive
+                        disk_amber = ((disk_values > 75) & (disk_values <= 89)).sum()  # Amber: 75-89% inclusive
+                        disk_red = (disk_values >= 90).sum()  # Red: 90-100% inclusive
             
             # Format percentages with 1 decimal place for better accuracy
             cpu_green_pct = f"{cpu_green} ({cpu_green/num_deployments*100:.1f}%)" if num_deployments > 0 else "0 (0%)"
@@ -1539,11 +1554,19 @@ def main():
             
             # Print instance counts by platform
             if "Platform_Category" in df_prod.columns:
-                print("\nECS Instance Counts by Platform:")
+                print("\nECS Instance Counts by Platform (RAW):")
                 platform_counts = df_prod["Platform_Category"].value_counts()
                 for platform, count in platform_counts.items():
                     print(f"  • {platform}: {count:,} instances")
                 print(f"  • TOTAL: {len(df_prod):,} instances")
+            
+            # Print consolidated application counts by platform
+            if "Platform_Category" in df_consolidated.columns:
+                print("\nECS Application Counts by Platform (CONSOLIDATED):")
+                platform_counts = df_consolidated["Platform_Category"].value_counts()
+                for platform, count in platform_counts.items():
+                    print(f"  • {platform}: {count:,} applications")
+                print(f"  • TOTAL: {len(df_consolidated):,} applications")
         elif resource_type == "RDS":
             raw_rds_data = df_prod.copy()
             all_data[resource_type] = df_prod
@@ -1572,8 +1595,10 @@ def main():
         
         print()
     
-    # Create executive dashboard using raw instance data
+    # Create executive dashboard using the appropriate data
     print("Creating executive dashboard...")
+    print("Note: ECS counts are based on CONSOLIDATED applications (post-transformation)")
+    print("      RDS/Cache counts are based on individual instances")
     executive_dashboard, metrics_summary = create_executive_dashboard(
         all_data, raw_ecs_data, raw_rds_data, raw_cache_data
     )
